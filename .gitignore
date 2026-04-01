@@ -43,6 +43,14 @@ icon256.png
 launch_simple_moozic_builder.bat
 push_release*.ps1
 
+# Bot secrets and local config (never commit these)
+.env
+bot_config.json
+
+# Bot workspace
+moozic_bot_workspace/
+bot.log
+
 # Temporary files
 *.tmp
 *.temp

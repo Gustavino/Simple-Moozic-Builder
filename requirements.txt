@@ -1,5 +1,12 @@
+# Simple Moozic Builder — core UI dependencies
 customtkinter>=5.2.2
 Pillow>=10.4.0
 miniaudio>=1.61
 soundfile>=0.13.1
 numpy>=2.1.0
+
+# Telegram bot dependencies
+python-telegram-bot>=21.0
+python-dotenv>=1.0.0
+yt-dlp>=2024.1.1
+spotdl>=4.2.0

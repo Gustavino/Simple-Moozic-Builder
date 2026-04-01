@@ -1,0 +1,22 @@
+{
+    "_comment": "Copy this file to bot_config.json. Secrets go in .env, not here.",
+
+    "mod_id": "MyMoozicPack",
+    "mod_name": "My Moozic Pack",
+    "author": "YourName",
+
+    "parent_mod_id": "TrueMoozic",
+    "standalone_bundle": false,
+
+    "media_type": "cassette",
+
+    "work_dir": "/home/user/moozic_bot_workspace",
+
+    "assets_root": "",
+
+    "workshop_cover": "",
+
+    "workshop_item_id": "0000000000",
+
+    "steamcmd_path": "steamcmd"
+}
