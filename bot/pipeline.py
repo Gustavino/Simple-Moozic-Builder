@@ -1,7 +1,9 @@
 """
-Full pipeline: Telegram URL -> download -> convert -> build mod -> upload to Workshop.
+Full pipeline: list of URLs -> download all -> convert all -> build mod once -> upload.
 
-Each step yields a status string so the bot can update the user in real time.
+Designed for batch processing: a session collects N links, then a single
+build+upload covers all of them, keeping Workshop updates minimal.
+
 All SMB functions are called directly (no subprocess) since this module runs
 in the same Python process as Simple Moozic Builder.
 """
@@ -12,7 +14,6 @@ import sys
 from pathlib import Path
 from typing import Generator
 
-# Ensure the repo root is on sys.path so we can import SMB directly.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -26,18 +27,22 @@ from bot.downloader import download_track, is_supported_url
 from bot.steam_uploader import upload_mod
 
 
-def run_pipeline(url: str, config: dict) -> Generator[str, None, None]:
-    """Runs the full add-music pipeline and yields human-readable status messages.
+def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, None]:
+    """Processes a batch of URLs in a single build+upload cycle.
+
+    Downloads and converts each URL individually, then runs one mod build
+    and one Workshop upload covering all tracks in the batch.
 
     Args:
-        url: YouTube or Spotify track URL.
-        config: Bot configuration dict (from bot_config.json).
+        urls: List of YouTube or Spotify track URLs.
+        config: Bot configuration dict (from bot_config.json + .env).
 
     Yields:
-        Status strings to send back to the Telegram user.
+        Human-readable status strings for the Telegram status message.
     """
-    if not is_supported_url(url):
-        yield "Link nao suportado. Envie um link do YouTube ou Spotify."
+    valid_urls = [u for u in urls if is_supported_url(u)]
+    if not valid_urls:
+        yield "Nenhum link valido na sessao."
         return
 
     work_dir = Path(config["work_dir"]).resolve()
@@ -45,38 +50,47 @@ def run_pipeline(url: str, config: dict) -> Generator[str, None, None]:
     audio_dir = work_dir / "_ogg"
     output_dir = work_dir / "OUTPUT"
 
+    total = len(valid_urls)
+    downloaded: list[tuple[str, str]] = []   # (title, artist) for summary
+    last_thumbnail: Path | None = None
+
     # ------------------------------------------------------------------ #
-    # Step 1 — Download
+    # Step 1 — Download + convert each track
     # ------------------------------------------------------------------ #
-    yield "Baixando musica..."
-    try:
-        result = download_track(url, download_dir)
-    except Exception as exc:
-        yield f"Erro no download: {exc}"
+    for i, url in enumerate(valid_urls, start=1):
+        yield f"[{i}/{total}] Baixando..."
+        try:
+            result = download_track(url, download_dir)
+        except Exception as exc:
+            yield f"[{i}/{total}] Erro no download: {exc}"
+            continue
+
+        yield f"[{i}/{total}] Convertendo: {result.title}"
+        try:
+            entry = convert_single_audio_file(result.audio_path, audio_dir, force=False)
+        except SystemExit as exc:
+            yield f"[{i}/{total}] Erro na conversao: {exc}"
+            continue
+
+        if not entry.ogg.exists():
+            yield f"[{i}/{total}] Erro: .ogg nao encontrado apos conversao."
+            continue
+
+        downloaded.append((result.title, result.artist))
+        if result.thumbnail_path and result.thumbnail_path.exists():
+            last_thumbnail = result.thumbnail_path
+
+    if not downloaded:
+        yield "Nenhuma musica convertida com sucesso. Build cancelado."
         return
 
-    yield f"Download concluido: {result.title} - {result.artist}"
+    summary_lines = "\n".join(f"  • {t} - {a}" for t, a in downloaded)
+    yield f"Download concluido ({len(downloaded)}/{total}):\n{summary_lines}"
 
     # ------------------------------------------------------------------ #
-    # Step 2 — Convert to .ogg via SMB
+    # Step 2 — Build mod once with everything in audio_dir
     # ------------------------------------------------------------------ #
-    yield "Convertendo para .ogg..."
-    try:
-        entry = convert_single_audio_file(result.audio_path, audio_dir, force=False)
-    except SystemExit as exc:
-        yield f"Erro na conversao: {exc}"
-        return
-
-    if not entry.ogg.exists():
-        yield f"Erro: arquivo .ogg nao encontrado apos conversao ({entry.ogg})"
-        return
-
-    yield f"Conversao concluida: {entry.ogg.name}"
-
-    # ------------------------------------------------------------------ #
-    # Step 3 — Build the mod with SMB
-    # ------------------------------------------------------------------ #
-    yield "Construindo mod..."
+    yield f"Construindo mod com {len(downloaded)} musica(s)..."
     assets_root = config.get("assets_root") or str(default_assets_root())
 
     build_config: dict = {
@@ -94,8 +108,8 @@ def run_pipeline(url: str, config: dict) -> Generator[str, None, None]:
     workshop_cover = config.get("workshop_cover")
     if workshop_cover:
         build_config["workshop_cover"] = workshop_cover
-    elif result.thumbnail_path and result.thumbnail_path.exists():
-        build_config["workshop_cover"] = str(result.thumbnail_path)
+    elif last_thumbnail:
+        build_config["workshop_cover"] = str(last_thumbnail)
 
     try:
         mod_output_path = build_mod_from_config(build_config)
@@ -103,19 +117,18 @@ def run_pipeline(url: str, config: dict) -> Generator[str, None, None]:
         yield f"Erro no build do mod: {exc}"
         return
 
-    yield f"Mod construido em: {mod_output_path}"
-
     # ------------------------------------------------------------------ #
-    # Step 4 — Upload to Steam Workshop (optional)
+    # Step 3 — Upload to Steam Workshop
     # ------------------------------------------------------------------ #
     workshop_item_id = config.get("workshop_item_id", "").strip()
     if not workshop_item_id:
         yield (
-            f"Pronto! '{result.title}' adicionado ao mod.\n"
-            "Upload para Workshop ignorado (workshop_item_id nao configurado)."
+            f"Mod buildado em: {mod_output_path}\n"
+            "Workshop upload ignorado (workshop_item_id nao configurado)."
         )
         return
 
+    track_names = ", ".join(t for t, _ in downloaded)
     yield "Enviando para Steam Workshop..."
     try:
         upload_mod(
@@ -123,13 +136,14 @@ def run_pipeline(url: str, config: dict) -> Generator[str, None, None]:
             workshop_item_id=workshop_item_id,
             steamcmd_path=config.get("steamcmd_path", "steamcmd"),
             steam_username=config.get("steam_username", ""),
-            change_note=f"Added: {result.title} - {result.artist}",
+            change_note=f"Added: {track_names}",
         )
     except Exception as exc:
         yield f"Erro no upload para Workshop: {exc}"
         return
 
     yield (
-        f"Pronto! '{result.title}' adicionado ao mod e publicado na Workshop.\n"
-        "Os jogadores vao ver a musica apos atualizar o mod no jogo."
+        f"Pronto! {len(downloaded)} musica(s) adicionada(s) ao mod:\n"
+        f"{summary_lines}\n\n"
+        "Jogadores veem as musicas apos atualizar o mod no jogo."
     )
