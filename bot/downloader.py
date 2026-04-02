@@ -12,6 +12,7 @@ Always returns list[DownloadResult] — single tracks return a list of one item.
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import sys
@@ -26,6 +27,8 @@ from typing import Optional
 _VENV_BIN = Path(sys.executable).parent
 _SPOTDL = str(_VENV_BIN / "spotdl")
 _YTDLP = str(_VENV_BIN / "yt-dlp")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +70,39 @@ def is_supported_url(url: str) -> bool:
 
 def is_playlist_url(url: str) -> bool:
     return _is_spotify_playlist(url) or _is_youtube_playlist(url)
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess streaming helper
+# --------------------------------------------------------------------------- #
+
+def _run_streaming(cmd: list[str], timeout: int, label: str) -> None:
+    """Runs a command and logs each output line in real time.
+
+    stdout and stderr are merged so all progress messages appear in order.
+    Raises RuntimeError if the process exits with a non-zero code.
+    """
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        lines: list[str] = []
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                line = line.rstrip()
+                if line:
+                    logger.info("[%s] %s", label, line)
+                    lines.append(line)
+        except Exception:
+            pass
+
+        proc.wait(timeout=timeout)
+        if proc.returncode != 0:
+            tail = "\n".join(lines[-20:])
+            raise RuntimeError(f"{label} falhou (exit {proc.returncode}):\n{tail}")
 
 
 # --------------------------------------------------------------------------- #
@@ -122,9 +158,7 @@ def _download_youtube(url: str, output_dir: Path, playlist: bool = False) -> lis
         "--", url,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp falhou:\n{result.stderr.strip()}")
+    _run_streaming(cmd, timeout=600, label="yt-dlp")
 
     results = _results_from_dir(batch_dir)
     if not results:
@@ -168,9 +202,7 @@ def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
         "--threads", "4",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"spotdl falhou:\n{result.stderr.strip()}")
+    _run_streaming(cmd, timeout=600, label="spotdl")
 
     results = _results_from_dir(batch_dir)
     if not results:
