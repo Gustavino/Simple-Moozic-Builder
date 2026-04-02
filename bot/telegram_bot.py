@@ -32,7 +32,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot.downloader import is_supported_url
+from bot.downloader import is_supported_url, is_playlist_url
 from bot.pipeline import run_batch_pipeline
 
 logging.basicConfig(
@@ -124,8 +124,9 @@ async def _build_worker(queue: asyncio.Queue, config: dict) -> None:
             job.user_id, len(job.urls), remaining,
         )
 
+        loop = asyncio.get_running_loop()
+
         def pipeline_sync() -> None:
-            loop = asyncio.get_event_loop()
             for status_text in run_batch_pipeline(job.urls, config):
                 logger.info("[pipeline] %s", status_text)
                 future = asyncio.run_coroutine_threadsafe(
@@ -265,10 +266,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     session.urls.append(text)
     n = len(session.urls)
+    label = "playlist" if is_playlist_url(text) else "link"
 
     # Update or create the session status message
     session_text = (
-        f"{n} musica(s) na sessao.\n"
+        f"{n} {label}(s) na sessao.\n"
         f"Aguardando {IDLE_TIMEOUT_SECONDS}s sem novos links para processar..."
     )
     if session.status_message:

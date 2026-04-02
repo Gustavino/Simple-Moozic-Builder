@@ -1,15 +1,20 @@
 """
 Audio downloader for the Telegram bot pipeline.
 
-Supports YouTube and Spotify URLs via yt-dlp (YouTube) and spotdl (Spotify).
-Downloaded files are placed in the given output_dir as MP3 for further
-conversion by Simple Moozic Builder's audio pipeline.
+Supports:
+  - YouTube single track
+  - YouTube playlist
+  - Spotify single track  (via spotdl)
+  - Spotify playlist      (via spotdl)
+
+Always returns list[DownloadResult] — single tracks return a list of one item.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -23,27 +28,79 @@ class DownloadResult:
     thumbnail_path: Optional[Path]
 
 
-def _is_spotify_url(url: str) -> bool:
+# --------------------------------------------------------------------------- #
+# URL detection
+# --------------------------------------------------------------------------- #
+
+def _is_spotify_track(url: str) -> bool:
     return bool(re.search(r"open\.spotify\.com/track/", url))
 
 
-def _is_youtube_url(url: str) -> bool:
+def _is_spotify_playlist(url: str) -> bool:
+    return bool(re.search(r"open\.spotify\.com/playlist/", url))
+
+
+def _is_youtube_single(url: str) -> bool:
     return bool(re.search(r"(youtube\.com/watch|youtu\.be/)", url))
 
 
+def _is_youtube_playlist(url: str) -> bool:
+    return bool(re.search(r"youtube\.com/playlist\?", url))
+
+
 def is_supported_url(url: str) -> bool:
-    return _is_spotify_url(url) or _is_youtube_url(url)
+    return any([
+        _is_spotify_track(url),
+        _is_spotify_playlist(url),
+        _is_youtube_single(url),
+        _is_youtube_playlist(url),
+    ])
 
 
-def _latest_file(directory: Path, pattern: str) -> Optional[Path]:
-    matches = sorted(directory.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    return matches[0] if matches else None
+def is_playlist_url(url: str) -> bool:
+    return _is_spotify_playlist(url) or _is_youtube_playlist(url)
 
 
-def _download_youtube(url: str, output_dir: Path) -> DownloadResult:
-    """Downloads audio from YouTube using yt-dlp."""
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def _collect_mp3s(directory: Path) -> list[Path]:
+    return sorted(directory.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
+
+
+def _collect_pngs(directory: Path) -> list[Path]:
+    return sorted(directory.glob("*.png"), key=lambda p: p.stat().st_mtime)
+
+
+def _results_from_dir(directory: Path) -> list[DownloadResult]:
+    """Builds DownloadResult entries for every MP3 found in directory."""
+    results = []
+    for mp3 in _collect_mp3s(directory):
+        pngs = [p for p in _collect_pngs(directory) if p.stem.startswith(mp3.stem)]
+        thumbnail = pngs[0] if pngs else None
+        results.append(DownloadResult(
+            audio_path=mp3,
+            title=mp3.stem,
+            artist="Unknown",
+            thumbnail_path=thumbnail,
+        ))
+    return results
+
+
+# --------------------------------------------------------------------------- #
+# YouTube
+# --------------------------------------------------------------------------- #
+
+def _download_youtube(url: str, output_dir: Path, playlist: bool = False) -> list[DownloadResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_template = str(output_dir / "%(title)s.%(ext)s")
+
+    # Use an isolated subdirectory so concurrent calls don't mix files
+    batch_dir = output_dir / f"_dl_{uuid.uuid4().hex[:8]}"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    output_template = str(batch_dir / "%(title)s.%(ext)s")
+    playlist_flag = "--yes-playlist" if playlist else "--no-playlist"
 
     cmd = [
         "yt-dlp",
@@ -52,79 +109,96 @@ def _download_youtube(url: str, output_dir: Path) -> DownloadResult:
         "--audio-quality", "0",
         "--write-thumbnail",
         "--convert-thumbnails", "png",
-        "--no-playlist",
-        "--print", "%(title)s\n%(artist)s",
+        playlist_flag,
         "-o", output_template,
         "--", url,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp download failed:\n{result.stderr.strip()}")
+        raise RuntimeError(f"yt-dlp falhou:\n{result.stderr.strip()}")
 
-    lines = [l for l in result.stdout.strip().splitlines() if l]
-    title = lines[0] if len(lines) > 0 else "Unknown"
-    artist = lines[1] if len(lines) > 1 else "Unknown"
-    # yt-dlp prints "NA" when the field is absent
-    if artist in ("NA", ""):
-        artist = "Unknown"
+    results = _results_from_dir(batch_dir)
+    if not results:
+        raise FileNotFoundError(f"Nenhum MP3 encontrado em {batch_dir} apos download.")
 
-    audio_path = _latest_file(output_dir, "*.mp3")
-    if audio_path is None:
-        raise FileNotFoundError(f"No MP3 found in {output_dir} after yt-dlp download.")
+    # Move files up to output_dir to keep a flat structure
+    for r in results:
+        dest = output_dir / r.audio_path.name
+        r.audio_path.rename(dest)
+        r.audio_path = dest
+        if r.thumbnail_path:
+            tdest = output_dir / r.thumbnail_path.name
+            r.thumbnail_path.rename(tdest)
+            r.thumbnail_path = tdest
 
-    thumbnail_path = _latest_file(output_dir, "*.png")
-    return DownloadResult(
-        audio_path=audio_path,
-        title=title,
-        artist=artist,
-        thumbnail_path=thumbnail_path,
-    )
+    try:
+        batch_dir.rmdir()
+    except OSError:
+        pass
+
+    return results
 
 
-def _download_spotify(url: str, output_dir: Path) -> DownloadResult:
-    """Downloads audio from a Spotify track URL using spotdl.
+# --------------------------------------------------------------------------- #
+# Spotify (spotdl)
+# --------------------------------------------------------------------------- #
 
-    spotdl matches the Spotify track metadata to a YouTube source and downloads it.
-    """
+def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    batch_dir = output_dir / f"_dl_{uuid.uuid4().hex[:8]}"
+    batch_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "spotdl",
         "download",
         url,
-        "--output", str(output_dir / "{title}"),
+        "--output", str(batch_dir / "{title}"),
         "--format", "mp3",
         "--bitrate", "192k",
-        "--threads", "1",
+        "--threads", "4",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
-        raise RuntimeError(f"spotdl download failed:\n{result.stderr.strip()}")
+        raise RuntimeError(f"spotdl falhou:\n{result.stderr.strip()}")
 
-    audio_path = _latest_file(output_dir, "*.mp3")
-    if audio_path is None:
-        raise FileNotFoundError(f"No MP3 found in {output_dir} after spotdl download.")
+    results = _results_from_dir(batch_dir)
+    if not results:
+        raise FileNotFoundError(f"Nenhum MP3 encontrado em {batch_dir} apos download.")
 
-    # Parse title and artist from the filename (spotdl uses "{title}" template)
-    stem = audio_path.stem
-    title = stem
-    artist = "Unknown"
+    for r in results:
+        dest = output_dir / r.audio_path.name
+        r.audio_path.rename(dest)
+        r.audio_path = dest
 
-    return DownloadResult(
-        audio_path=audio_path,
-        title=title,
-        artist=artist,
-        thumbnail_path=None,
-    )
+    try:
+        batch_dir.rmdir()
+    except OSError:
+        pass
+
+    return results
 
 
-def download_track(url: str, output_dir: Path) -> DownloadResult:
-    """Entry point: detects URL type and routes to the correct downloader."""
+# --------------------------------------------------------------------------- #
+# Public API
+# --------------------------------------------------------------------------- #
+
+def download_tracks(url: str, output_dir: Path) -> list[DownloadResult]:
+    """Downloads one or more tracks from a YouTube or Spotify URL.
+
+    Returns a list of DownloadResult — single tracks return a list of one.
+    Raises ValueError for unsupported URLs, RuntimeError on download failure.
+    """
     url = url.strip()
-    if _is_spotify_url(url):
+    if _is_spotify_track(url) or _is_spotify_playlist(url):
         return _download_spotify(url, output_dir)
-    if _is_youtube_url(url):
-        return _download_youtube(url, output_dir)
-    raise ValueError(f"Unsupported URL. Send a YouTube or Spotify track link.\nReceived: {url}")
+    if _is_youtube_single(url):
+        return _download_youtube(url, output_dir, playlist=False)
+    if _is_youtube_playlist(url):
+        return _download_youtube(url, output_dir, playlist=True)
+    raise ValueError(
+        f"Link nao suportado. Envie YouTube (track ou playlist) "
+        f"ou Spotify (track ou playlist).\nRecebido: {url}"
+    )

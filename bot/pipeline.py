@@ -1,11 +1,10 @@
 """
 Full pipeline: list of URLs -> download all -> convert all -> build mod once -> upload.
 
-Designed for batch processing: a session collects N links, then a single
-build+upload covers all of them, keeping Workshop updates minimal.
+Designed for batch processing: a session collects N links (including playlists),
+then a single build+upload covers all of them.
 
-All SMB functions are called directly (no subprocess) since this module runs
-in the same Python process as Simple Moozic Builder.
+Dedup: tracks whose .ogg already exists in the cache are skipped before conversion.
 """
 
 from __future__ import annotations
@@ -23,19 +22,23 @@ from simple_moozic_builder import (  # type: ignore
     convert_single_audio_file,
     default_assets_root,
 )
-from bot.downloader import download_track, is_supported_url
-from bot.steam_uploader import upload_mod
+from bot.downloader import download_tracks, is_supported_url, is_playlist_url
+
+
+def _ogg_already_exists(audio_path: Path, ogg_cache_dir: Path) -> bool:
+    """Returns True if a converted .ogg for this source already exists in the cache."""
+    return (ogg_cache_dir / f"{audio_path.stem}.ogg").exists()
 
 
 def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, None]:
-    """Processes a batch of URLs in a single build+upload cycle.
+    """Processes a batch of URLs (tracks and/or playlists) in a single build+upload cycle.
 
-    Downloads and converts each URL individually, then runs one mod build
-    and one Workshop upload covering all tracks in the batch.
+    For each URL:
+      - Expands playlists into individual tracks
+      - Skips tracks already in the .ogg cache (dedup)
+      - Downloads and converts new tracks
 
-    Args:
-        urls: List of YouTube or Spotify track URLs.
-        config: Bot configuration dict (from bot_config.json + .env).
+    Then runs one mod build and one Workshop upload for the whole batch.
 
     Yields:
         Human-readable status strings for the Telegram status message.
@@ -47,58 +50,81 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
 
     work_dir = Path(config["work_dir"]).resolve()
     download_dir = work_dir / "downloads"
-    audio_dir = work_dir / "_ogg"
+    ogg_cache_dir = work_dir / "_ogg"   # audio_cache_root returns this dir directly
     output_dir = work_dir / "OUTPUT"
 
-    total = len(valid_urls)
-    downloaded: list[tuple[str, str]] = []   # (title, artist) for summary
+    ogg_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    converted: list[tuple[str, str]] = []   # (title, artist) — newly added
+    skipped: list[str] = []                 # titles already in mod
     last_thumbnail: Path | None = None
 
     # ------------------------------------------------------------------ #
-    # Step 1 — Download + convert each track
+    # Step 1 — Expand, dedup, download, convert
     # ------------------------------------------------------------------ #
-    for i, url in enumerate(valid_urls, start=1):
-        yield f"[{i}/{total}] Baixando..."
+    for url_idx, url in enumerate(valid_urls, start=1):
+        prefix = f"[URL {url_idx}/{len(valid_urls)}]"
+        label = "playlist" if is_playlist_url(url) else "track"
+        yield f"{prefix} Baixando {label}..."
+
         try:
-            result = download_track(url, download_dir)
+            results = download_tracks(url, download_dir)
         except Exception as exc:
-            yield f"[{i}/{total}] Erro no download: {exc}"
+            yield f"{prefix} Erro no download: {exc}"
             continue
 
-        yield f"[{i}/{total}] Convertendo: {result.title}"
-        try:
-            entry = convert_single_audio_file(result.audio_path, audio_dir, force=False)
-        except SystemExit as exc:
-            yield f"[{i}/{total}] Erro na conversao: {exc}"
-            continue
+        yield f"{prefix} {len(results)} faixa(s) encontrada(s). Processando..."
 
-        if not entry.ogg.exists():
-            yield f"[{i}/{total}] Erro: .ogg nao encontrado apos conversao."
-            continue
+        for i, result in enumerate(results, start=1):
+            track_prefix = f"{prefix} [{i}/{len(results)}]"
 
-        downloaded.append((result.title, result.artist))
-        if result.thumbnail_path and result.thumbnail_path.exists():
-            last_thumbnail = result.thumbnail_path
+            # --- Dedup check ---
+            if _ogg_already_exists(result.audio_path, ogg_cache_dir):
+                skipped.append(result.title)
+                yield f"{track_prefix} Ja existe no mod, pulando: {result.title}"
+                continue
 
-    if not downloaded:
-        yield "Nenhuma musica convertida com sucesso. Build cancelado."
+            yield f"{track_prefix} Convertendo: {result.title}"
+            try:
+                entry = convert_single_audio_file(result.audio_path, ogg_cache_dir, force=False)
+            except SystemExit as exc:
+                yield f"{track_prefix} Erro na conversao: {exc}"
+                continue
+
+            if not entry.ogg.exists():
+                yield f"{track_prefix} Erro: .ogg nao encontrado apos conversao."
+                continue
+
+            converted.append((result.title, result.artist))
+            if result.thumbnail_path and result.thumbnail_path.exists():
+                last_thumbnail = result.thumbnail_path
+
+    # ------------------------------------------------------------------ #
+    # Summary before build
+    # ------------------------------------------------------------------ #
+    if skipped:
+        yield f"Puladas ({len(skipped)} ja no mod): {', '.join(skipped)}"
+
+    if not converted:
+        yield "Nenhuma musica nova para adicionar. Build cancelado."
         return
 
-    summary_lines = "\n".join(f"  • {t} - {a}" for t, a in downloaded)
-    yield f"Download concluido ({len(downloaded)}/{total}):\n{summary_lines}"
+    new_summary = "\n".join(f"  • {t} - {a}" for t, a in converted)
+    yield f"Novas musicas ({len(converted)}):\n{new_summary}"
 
     # ------------------------------------------------------------------ #
-    # Step 2 — Build mod once with everything in audio_dir
+    # Step 2 — Build mod once with everything in ogg_cache_dir
     # ------------------------------------------------------------------ #
-    yield f"Construindo mod com {len(downloaded)} musica(s)..."
+    total_oggs = len(list(ogg_cache_dir.glob("*.ogg")))
+    yield f"Construindo mod ({total_oggs} faixa(s) total no mod)..."
+
     assets_root = config.get("assets_root") or str(default_assets_root())
-
     build_config: dict = {
         "mode": config.get("media_type", "cassette"),
         "mod_id": config["mod_id"],
         "name": config.get("mod_name", config["mod_id"]),
         "author": config.get("author", "local-builder"),
-        "audio_dir": str(audio_dir),
+        "audio_dir": str(ogg_cache_dir),
         "out_dir": str(output_dir),
         "assets_root": assets_root,
         "parent_mod_id": config.get("parent_mod_id", "TrueMoozic"),
@@ -134,7 +160,9 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
         )
         return
 
-    track_names = ", ".join(t for t, _ in downloaded)
+    from bot.steam_uploader import upload_mod
+
+    track_names = ", ".join(t for t, _ in converted)
     yield "Enviando para Steam Workshop..."
     try:
         upload_mod(
@@ -149,7 +177,7 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
         return
 
     yield (
-        f"Pronto! {len(downloaded)} musica(s) adicionada(s) ao mod:\n"
-        f"{summary_lines}\n\n"
+        f"Pronto! {len(converted)} musica(s) nova(s) adicionada(s):\n{new_summary}\n\n"
+        f"Mod agora tem {total_oggs} faixa(s) no total.\n"
         "Jogadores veem as musicas apos atualizar o mod no jogo."
     )
