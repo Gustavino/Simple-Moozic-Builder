@@ -14,10 +14,18 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+# Use binaries from the same venv as this Python process.
+# This ensures the correct binary is found when running under systemd,
+# where PATH does not include the venv's bin directory.
+_VENV_BIN = Path(sys.executable).parent
+_SPOTDL = str(_VENV_BIN / "spotdl")
+_YTDLP = str(_VENV_BIN / "yt-dlp")
 
 
 @dataclass
@@ -103,7 +111,7 @@ def _download_youtube(url: str, output_dir: Path, playlist: bool = False) -> lis
     playlist_flag = "--yes-playlist" if playlist else "--no-playlist"
 
     cmd = [
-        "yt-dlp",
+        _YTDLP,
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "0",
@@ -151,7 +159,7 @@ def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
     batch_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "spotdl",
+        _SPOTDL,
         "download",
         url,
         "--output", str(batch_dir / "{title}"),
