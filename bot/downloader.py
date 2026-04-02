@@ -13,6 +13,7 @@ Always returns list[DownloadResult] — single tracks return a list of one item.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -201,6 +202,11 @@ def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
         "--bitrate", "192k",
         "--threads", "4",
     ]
+
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip()
+    if client_id and client_secret:
+        cmd += ["--client-id", client_id, "--client-secret", client_secret]
 
     _run_streaming(cmd, timeout=600, label="spotdl")
 
