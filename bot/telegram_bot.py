@@ -124,8 +124,9 @@ async def _build_worker(queue: asyncio.Queue, config: dict) -> None:
             job.user_id, len(job.urls), remaining,
         )
 
+        loop = asyncio.get_running_loop()
+
         def pipeline_sync() -> None:
-            loop = asyncio.get_event_loop()
             for status_text in run_batch_pipeline(job.urls, config):
                 logger.info("[pipeline] %s", status_text)
                 future = asyncio.run_coroutine_threadsafe(
