@@ -112,7 +112,13 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
         build_config["workshop_cover"] = str(last_thumbnail)
 
     try:
-        mod_output_path = build_mod_from_config(build_config)
+        if build_config["mode"] == "both":
+            build_config["mode"] = "cassette"
+            build_mod_from_config(build_config)
+            build_config["mode"] = "vinyl"
+            mod_output_path = build_mod_from_config(build_config)
+        else:
+            mod_output_path = build_mod_from_config(build_config)
     except SystemExit as exc:
         yield f"Erro no build do mod: {exc}"
         return
