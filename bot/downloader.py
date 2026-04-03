@@ -221,10 +221,13 @@ def _download_spotify(url: str, output_dir: Path, config: dict | None = None) ->
     if client_id and client_secret:
         cmd += ["--client-id", client_id, "--client-secret", client_secret]
 
-    # spotdl uses yt-dlp internally; pass cookies to avoid YouTube bot detection
+    # spotdl uses yt-dlp internally; pass cookies and yt-dlp flags for YouTube
     cookies_file = (config or {}).get("youtube_cookies_file", "")
     if cookies_file and Path(cookies_file).is_file():
         cmd += ["--cookie-file", cookies_file]
+
+    # Pass EJS runtime and web client to spotdl's internal yt-dlp
+    cmd += ["--yt-dlp-args", "--js-runtimes=node --extractor-args=youtube:player_client=web"]
 
     _run_streaming(cmd, timeout=600, label="spotdl")
 
