@@ -17,17 +17,25 @@ from pathlib import Path
 PZ_APP_ID = "108600"
 
 
-def _build_vdf(content_folder: Path, item_id: str, preview_image: Path, change_note: str) -> str:
-    return (
-        '"workshopitem"\n'
-        "{\n"
-        f'\t"appid"\t\t"{PZ_APP_ID}"\n'
-        f'\t"publishedfileid"\t"{item_id}"\n'
-        f'\t"contentfolder"\t"{content_folder}"\n'
-        f'\t"previewfile"\t"{preview_image}"\n'
-        f'\t"changenote"\t"{change_note}"\n'
-        "}\n"
-    )
+def _build_vdf(
+    content_folder: Path, item_id: str, preview_image: Path,
+    change_note: str, description: str = "",
+) -> str:
+    lines = [
+        '"workshopitem"',
+        "{",
+        f'\t"appid"\t\t"{PZ_APP_ID}"',
+        f'\t"publishedfileid"\t"{item_id}"',
+        f'\t"contentfolder"\t"{content_folder}"',
+        f'\t"previewfile"\t"{preview_image}"',
+        f'\t"changenote"\t"{change_note}"',
+    ]
+    if description:
+        escaped = description.replace('"', '\\"')
+        lines.append(f'\t"description"\t"{escaped}"')
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def upload_mod(
@@ -36,6 +44,7 @@ def upload_mod(
     steamcmd_path: str = "steamcmd",
     steam_username: str = "",
     change_note: str = "New tracks added via Telegram bot",
+    description: str = "",
 ) -> None:
     """Updates a Steam Workshop item with the built mod folder.
 
@@ -45,6 +54,7 @@ def upload_mod(
         steamcmd_path: Path or name of the steamcmd binary.
         steam_username: Steam account username (credentials must be cached).
         change_note: Short description of this update.
+        description: Full Workshop description (song list, etc.).
     """
     preview_image = mod_output_dir / "poster.png"
     if not preview_image.exists():
@@ -52,7 +62,7 @@ def upload_mod(
         pngs = list(mod_output_dir.glob("*.png"))
         preview_image = pngs[0] if pngs else mod_output_dir / "poster.png"
 
-    vdf_content = _build_vdf(mod_output_dir, workshop_item_id, preview_image, change_note)
+    vdf_content = _build_vdf(mod_output_dir, workshop_item_id, preview_image, change_note, description)
     vdf_path = mod_output_dir / "workshop_upload.vdf"
     vdf_path.write_text(vdf_content, encoding="utf-8")
 

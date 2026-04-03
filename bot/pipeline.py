@@ -21,6 +21,9 @@ from simple_moozic_builder import (  # type: ignore
     build_mod_from_config,
     convert_single_audio_file,
     default_assets_root,
+    display_name_from_file,
+    find_oggs,
+    workshop_song_lines,
 )
 from bot.downloader import download_tracks, is_supported_url, is_playlist_url
 
@@ -193,6 +196,35 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
 
     from bot.steam_uploader import upload_mod
 
+    # --- Build Workshop description matching SMB desktop format ---
+    all_oggs = sorted(ogg_cache_dir.glob("*.ogg"), key=lambda p: p.name)
+    media_type = config.get("media_type", "cassette")
+    include_cassette = media_type in ("cassette", "both")
+    include_vinyl = media_type in ("vinyl", "both")
+    if include_cassette and include_vinyl:
+        mode_label = "[i]Cassette & Vinyl[/i]"
+    elif include_cassette:
+        mode_label = "[i]Cassette[/i]"
+    elif include_vinyl:
+        mode_label = "[i]Vinyl[/i]"
+    else:
+        mode_label = ""
+
+    song_mode_labels = {ogg.name: mode_label for ogg in all_oggs}
+    song_lines = workshop_song_lines(all_oggs, song_mode_labels=song_mode_labels)
+    mod_name = config.get("mod_name", config["mod_id"])
+
+    desc_parts = [
+        "[i] Generated with Simple Moozic Builder [/i]",
+        f"[h2]{mod_name}[/h2]",
+        "[h3]Song List[/h3]",
+        *song_lines,
+        "",
+        f"Workshop ID: {workshop_item_id}",
+        f"Mod ID: {config['mod_id']}",
+    ]
+    workshop_description = "\n".join(desc_parts)
+
     track_names = ", ".join(t for t, _ in converted) if converted else "rebuild"
     yield "Enviando para Steam Workshop..."
     try:
@@ -202,6 +234,7 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
             steamcmd_path=config.get("steamcmd_path", "steamcmd"),
             steam_username=config.get("steam_username", ""),
             change_note=f"Added: {track_names}",
+            description=workshop_description,
         )
     except Exception as exc:
         yield f"Erro no upload para Workshop: {exc}"
