@@ -30,14 +30,27 @@ def _ogg_already_exists(audio_path: Path, ogg_cache_dir: Path) -> bool:
     return (ogg_cache_dir / f"{audio_path.stem}.ogg").exists()
 
 
-def _mod_needs_rebuild(ogg_cache_dir: Path, output_dir: Path, mod_id: str) -> bool:
-    """Returns True if the built mod is missing or out of sync with the .ogg cache."""
-    sound_dir = output_dir / mod_id / "Contents" / "mods" / mod_id / "common" / "media" / "sound" / mod_id
-    if not sound_dir.is_dir():
-        return True
-    cached_count = len(list(ogg_cache_dir.glob("*.ogg")))
-    built_count = len(list(sound_dir.glob("*.ogg")))
-    return built_count < cached_count
+def _build_stamp_path(ogg_cache_dir: Path) -> Path:
+    """Path to a file that records which .ogg stems were in the last successful build."""
+    return ogg_cache_dir / ".last_build_oggs"
+
+
+def _mod_needs_rebuild(ogg_cache_dir: Path) -> bool:
+    """Returns True if the .ogg cache has tracks not included in the last successful build."""
+    stamp = _build_stamp_path(ogg_cache_dir)
+    if not stamp.is_file():
+        # No successful build recorded — rebuild if there are any .ogg files
+        return bool(list(ogg_cache_dir.glob("*.ogg")))
+    built_stems = set(stamp.read_text().splitlines())
+    cached_stems = {p.stem for p in ogg_cache_dir.glob("*.ogg")}
+    return not cached_stems.issubset(built_stems)
+
+
+def _write_build_stamp(ogg_cache_dir: Path) -> None:
+    """Records the current .ogg cache contents after a successful build+upload."""
+    stamp = _build_stamp_path(ogg_cache_dir)
+    stems = sorted(p.stem for p in ogg_cache_dir.glob("*.ogg"))
+    stamp.write_text("\n".join(stems))
 
 
 def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, None]:
@@ -115,7 +128,7 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
     if skipped:
         yield f"Ja convertidas ({len(skipped)}, pulando download): {', '.join(skipped)}"
 
-    needs_rebuild = _mod_needs_rebuild(ogg_cache_dir, output_dir, config["mod_id"])
+    needs_rebuild = _mod_needs_rebuild(ogg_cache_dir)
 
     if not converted and not needs_rebuild:
         yield "Todas as musicas ja estao no mod. Build cancelado."
@@ -171,6 +184,7 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
     # ------------------------------------------------------------------ #
     workshop_item_id = config.get("workshop_item_id", "").strip()
     if not workshop_item_id:
+        _write_build_stamp(ogg_cache_dir)
         yield (
             f"Mod buildado em: {mod_output_path}\n"
             "Workshop upload ignorado (workshop_item_id nao configurado)."
@@ -192,6 +206,8 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
     except Exception as exc:
         yield f"Erro no upload para Workshop: {exc}"
         return
+
+    _write_build_stamp(ogg_cache_dir)
 
     if converted:
         new_summary = "\n".join(f"  • {t} - {a}" for t, a in converted)
