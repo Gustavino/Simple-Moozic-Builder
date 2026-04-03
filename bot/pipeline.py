@@ -129,6 +129,8 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
         "assets_root": assets_root,
         "parent_mod_id": config.get("parent_mod_id", "TrueMoozic"),
         "standalone_bundle": config.get("standalone_bundle", False),
+        "custom_vinyls": config.get("custom_vinyls", False),
+        "custom_cassettes": config.get("custom_cassettes", False),
     }
 
     workshop_cover = config.get("workshop_cover")
