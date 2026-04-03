@@ -167,6 +167,8 @@ def _download_youtube(
 
     # Prefer the web client which supports cookies and avoids signature issues
     cmd += ["--extractor-args", "youtube:player_client=web"]
+    # Explicitly use Node.js runtime for EJS challenge solving
+    cmd += ["--js-runtimes", "node"]
 
     cmd += ["--", url]
 
