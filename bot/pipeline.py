@@ -30,6 +30,16 @@ def _ogg_already_exists(audio_path: Path, ogg_cache_dir: Path) -> bool:
     return (ogg_cache_dir / f"{audio_path.stem}.ogg").exists()
 
 
+def _mod_needs_rebuild(ogg_cache_dir: Path, output_dir: Path, mod_id: str) -> bool:
+    """Returns True if the built mod is missing or out of sync with the .ogg cache."""
+    sound_dir = output_dir / mod_id / "Contents" / "mods" / mod_id / "common" / "media" / "sound" / mod_id
+    if not sound_dir.is_dir():
+        return True
+    cached_count = len(list(ogg_cache_dir.glob("*.ogg")))
+    built_count = len(list(sound_dir.glob("*.ogg")))
+    return built_count < cached_count
+
+
 def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, None]:
     """Processes a batch of URLs (tracks and/or playlists) in a single build+upload cycle.
 
@@ -103,14 +113,19 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
     # Summary before build
     # ------------------------------------------------------------------ #
     if skipped:
-        yield f"Puladas ({len(skipped)} ja no mod): {', '.join(skipped)}"
+        yield f"Ja convertidas ({len(skipped)}, pulando download): {', '.join(skipped)}"
 
-    if not converted:
-        yield "Nenhuma musica nova para adicionar. Build cancelado."
+    needs_rebuild = _mod_needs_rebuild(ogg_cache_dir, output_dir, config["mod_id"])
+
+    if not converted and not needs_rebuild:
+        yield "Todas as musicas ja estao no mod. Build cancelado."
         return
 
-    new_summary = "\n".join(f"  • {t} - {a}" for t, a in converted)
-    yield f"Novas musicas ({len(converted)}):\n{new_summary}"
+    if converted:
+        new_summary = "\n".join(f"  • {t} - {a}" for t, a in converted)
+        yield f"Novas musicas ({len(converted)}):\n{new_summary}"
+    elif needs_rebuild:
+        yield "Mod desatualizado — rebuild necessario."
 
     # ------------------------------------------------------------------ #
     # Step 2 — Build mod once with everything in ogg_cache_dir
@@ -164,7 +179,7 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
 
     from bot.steam_uploader import upload_mod
 
-    track_names = ", ".join(t for t, _ in converted)
+    track_names = ", ".join(t for t, _ in converted) if converted else "rebuild"
     yield "Enviando para Steam Workshop..."
     try:
         upload_mod(
@@ -178,8 +193,15 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
         yield f"Erro no upload para Workshop: {exc}"
         return
 
-    yield (
-        f"Pronto! {len(converted)} musica(s) nova(s) adicionada(s):\n{new_summary}\n\n"
-        f"Mod agora tem {total_oggs} faixa(s) no total.\n"
-        "Jogadores veem as musicas apos atualizar o mod no jogo."
-    )
+    if converted:
+        new_summary = "\n".join(f"  • {t} - {a}" for t, a in converted)
+        yield (
+            f"Pronto! {len(converted)} musica(s) nova(s) adicionada(s):\n{new_summary}\n\n"
+            f"Mod agora tem {total_oggs} faixa(s) no total.\n"
+            "Jogadores veem as musicas apos atualizar o mod no jogo."
+        )
+    else:
+        yield (
+            f"Rebuild concluido! Mod tem {total_oggs} faixa(s) no total.\n"
+            "Jogadores veem as musicas apos atualizar o mod no jogo."
+        )
