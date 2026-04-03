@@ -137,7 +137,9 @@ def _results_from_dir(directory: Path) -> list[DownloadResult]:
 # YouTube
 # --------------------------------------------------------------------------- #
 
-def _download_youtube(url: str, output_dir: Path, playlist: bool = False) -> list[DownloadResult]:
+def _download_youtube(
+    url: str, output_dir: Path, playlist: bool = False, config: dict | None = None,
+) -> list[DownloadResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use an isolated subdirectory so concurrent calls don't mix files
@@ -156,8 +158,17 @@ def _download_youtube(url: str, output_dir: Path, playlist: bool = False) -> lis
         "--convert-thumbnails", "png",
         playlist_flag,
         "-o", output_template,
-        "--", url,
     ]
+
+    # Use cookies to bypass YouTube bot detection / signature challenges
+    cookies_file = (config or {}).get("youtube_cookies_file", "")
+    if cookies_file and Path(cookies_file).is_file():
+        cmd += ["--cookies", cookies_file]
+
+    # Prefer the web client which supports cookies and avoids signature issues
+    cmd += ["--extractor-args", "youtube:player_client=web"]
+
+    cmd += ["--", url]
 
     _run_streaming(cmd, timeout=600, label="yt-dlp")
 
@@ -187,7 +198,7 @@ def _download_youtube(url: str, output_dir: Path, playlist: bool = False) -> lis
 # Spotify (spotdl)
 # --------------------------------------------------------------------------- #
 
-def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
+def _download_spotify(url: str, output_dir: Path, config: dict | None = None) -> list[DownloadResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     batch_dir = output_dir / f"_dl_{uuid.uuid4().hex[:8]}"
@@ -207,6 +218,11 @@ def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
     client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip()
     if client_id and client_secret:
         cmd += ["--client-id", client_id, "--client-secret", client_secret]
+
+    # spotdl uses yt-dlp internally; pass cookies to avoid YouTube bot detection
+    cookies_file = (config or {}).get("youtube_cookies_file", "")
+    if cookies_file and Path(cookies_file).is_file():
+        cmd += ["--cookie-file", cookies_file]
 
     _run_streaming(cmd, timeout=600, label="spotdl")
 
@@ -231,7 +247,7 @@ def _download_spotify(url: str, output_dir: Path) -> list[DownloadResult]:
 # Public API
 # --------------------------------------------------------------------------- #
 
-def download_tracks(url: str, output_dir: Path) -> list[DownloadResult]:
+def download_tracks(url: str, output_dir: Path, config: dict | None = None) -> list[DownloadResult]:
     """Downloads one or more tracks from a YouTube or Spotify URL.
 
     Returns a list of DownloadResult — single tracks return a list of one.
@@ -239,11 +255,11 @@ def download_tracks(url: str, output_dir: Path) -> list[DownloadResult]:
     """
     url = url.strip()
     if _is_spotify_track(url) or _is_spotify_playlist(url):
-        return _download_spotify(url, output_dir)
+        return _download_spotify(url, output_dir, config=config)
     if _is_youtube_single(url):
-        return _download_youtube(url, output_dir, playlist=False)
+        return _download_youtube(url, output_dir, playlist=False, config=config)
     if _is_youtube_playlist(url):
-        return _download_youtube(url, output_dir, playlist=True)
+        return _download_youtube(url, output_dir, playlist=True, config=config)
     raise ValueError(
         f"Link nao suportado. Envie YouTube (track ou playlist) "
         f"ou Spotify (track ou playlist).\nRecebido: {url}"

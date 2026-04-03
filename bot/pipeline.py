@@ -68,7 +68,7 @@ def run_batch_pipeline(urls: list[str], config: dict) -> Generator[str, None, No
         yield f"{prefix} Baixando {label}..."
 
         try:
-            results = download_tracks(url, download_dir)
+            results = download_tracks(url, download_dir, config=config)
         except Exception as exc:
             yield f"{prefix} Erro no download: {exc}"
             continue

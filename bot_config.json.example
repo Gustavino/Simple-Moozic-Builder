@@ -18,5 +18,7 @@
 
     "workshop_item_id": "0000000000",
 
-    "steamcmd_path": "steamcmd"
+    "steamcmd_path": "steamcmd",
+
+    "youtube_cookies_file": ""
 }
