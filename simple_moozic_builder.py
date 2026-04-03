@@ -474,8 +474,7 @@ def write_workshop_images(
     for poster_target in (paths["mod_base"] / "poster.png", paths["v42"] / "poster.png"):
         poster_img.save(poster_target, format="PNG")
 
-    # Write both name variants to match existing mixed usage in your workshop folders.
-    preview_img.save(paths["root"] / "Preview.png", format="PNG")
+    # Steam Workshop expects preview.png (lowercase) in the mod root.
     preview_img.save(paths["root"] / "preview.png", format="PNG")
     _save_hr_cover(poster_src, paths["hr"] / "Poster.png")
 
